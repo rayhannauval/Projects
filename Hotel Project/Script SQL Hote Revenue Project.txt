@@ -1,0 +1,219 @@
+-- Data source merupakan data rekap transaksi sebuah hotel mulai dari bulan Juni 2018 hingga Agustus 2020. Data terdiri dari 25 column dan 98.252 row. 
+-- Data yang diupload dalam github sudah dinormalisasi hingga tahap 3NF sehingga mengurangi adanya redudansi. Hasil normalisasi data adalah lima table
+-- yang berjudul customer_record_2018, customer_record_2019, customer_record_2020, meal_cost, serta market_segment.
+-- Beberapa pertanyaan yang bisa dijawab melalui project ini: (1.) Bagaimana karakteristik customer hotel? (2.) Bagaimana pertumbuhan revenue hotel? 
+-- (3.) Strategi bisnis apa yang bisa diambil dari data source?
+-- Query menggunakan bahasa SQL dilakukan menggunakan software SQL Server 2019 dan Microsoft SQL Server Management Studio 18, dan kemudian divisualisasikan dengan Tableu Public.
+-- Nama table yang digunakan pada penulisan query pada file ini sama dengan judul data yang ditampilkan pada Tableu Public, untuk memudahkan pembacaan.
+
+----------------- Customer Insight
+
+-- Visitor Age Distribution vs Date
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+-- Syntax with as (union) digunakan untuk membuat temporary data, yang berisi gabungan dari table dbo.customer_record_2018$, dbo.customer_record_2019$, dbo.customer_record_2020$.
+-- Langkah ini juga banyak diperlukan untuk pengerjaan visualisasi yang lainnya untuk mengefektifkan query.
+
+select sum(adults) as adults_count, sum(children) as children_count, sum(babies) as babies_count, concat(arrival_date_month, ' ', arrival_date_year) as arrival
+from customer_record
+where is_canceled = 0
+group by arrival_date_month, arrival_date_year
+
+-- Customer Distribution
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select country,
+count(country) as customer_amount
+from customer_record as cr
+left join dbo.market_segment$ as ms
+on cr.market_segment = ms.market_segment
+		left join meal_cost$ as mc
+		on cr.meal = mc.meal
+where is_canceled = 0
+group by country
+
+-- Booking vs Cancellation
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select count(reserved_room_type) as room_count,
+reserved_room_type,
+customer_type 
+from customer_record
+group by reserved_room_type, customer_type
+
+-- Marketing Channel vs Customer Amount
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select count(market_segment) as total_booking,
+market_segment as market_channel,
+arrival_date_year 
+from customer_record
+group by market_segment, arrival_date_year
+
+-- Room Type vs Customer Type
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select count(reserved_room_type) as room_count,
+reserved_room_type,
+customer_type 
+from customer_record
+group by reserved_room_type, customer_type
+
+-- Customer Type vs Customer Amount vs Date
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select 
+count(customer_type) as customer_type_count,
+customer_type,
+hotel,
+concat(arrival_date_month,' ', arrival_date_year) as arrival
+from customer_record
+group by customer_type, arrival_date_month, arrival_date_year, hotel
+
+-- Car Amount vs Customer Type vs Date
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select 
+count(hotel) as vehicle_count,
+concat(arrival_date_month,' ', arrival_date_year) as arrival,
+customer_type
+from customer_record
+where required_car_parking_spaces = 1 and is_canceled = 0
+group by customer_type, arrival_date_month, arrival_date_year
+
+-- Priority Customer vs Hotel vs Date
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select 
+count(hotel) as priority_customer_amount,
+hotel,
+concat(arrival_date_month,' ', arrival_date_year) as arrival
+from customer_record
+where (stays_in_week_nights+stays_in_weekend_nights) > (select avg(stays_in_week_nights+stays_in_weekend_nights) from customer_record) and is_canceled = 0
+group by customer_type, arrival_date_month, arrival_date_year, hotel
+
+-- Meal Revenue vs Room Revenue vs Date
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select hotel,
+((stays_in_week_nights+stays_in_weekend_nights)*adr)*(1-Discount) as room_revenue,
+(Cost*(stays_in_week_nights+stays_in_weekend_nights))*(1-Discount) as meal_revenue,
+reservation_status_date
+from customer_record as cr
+left join dbo.market_segment$ as ms
+on cr.market_segment = ms.market_segment
+		left join meal_cost$ as mc
+		on cr.meal = mc.meal
+where is_canceled = 0
+order by reservation_status_date asc
+
+-- Market Channel vs Revenue vs Date
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select hotel,
+ms.market_segment,
+((stays_in_week_nights+stays_in_weekend_nights)*adr)+(Cost*(stays_in_week_nights+stays_in_weekend_nights))*(1-Discount) as revenue,
+concat(arrival_date_month,' ', arrival_date_year) as arrival
+from customer_record as cr
+left join dbo.market_segment$ as ms
+on cr.market_segment = ms.market_segment
+		left join meal_cost$ as mc
+		on cr.meal = mc.meal
+where is_canceled = 0
+
+-- Revenue vs Time
+with customer_record as (
+select * from dbo.customer_record_2018$
+union
+select * from dbo.customer_record_2019$
+union
+select * from dbo.customer_record_2020$)
+
+select hotel,
+((stays_in_week_nights+stays_in_weekend_nights)*adr)+(Cost*(stays_in_week_nights+stays_in_weekend_nights))*(1-Discount) as revenue,
+reservation_status_date
+from customer_record as cr
+left join dbo.market_segment$ as ms
+on cr.market_segment = ms.market_segment
+		left join meal_cost$ as mc
+		on cr.meal = mc.meal
+where is_canceled = 0
+order by reservation_status_date asc
+
+-- Berdasarkan data-data yang dikumpulkan diatas, diketahui bahwa jawaban pertanyaan: 
+-- (1.) Visitor dari hotel tersebut didominasi oleh golongan customer yang tergolong 
+-- usia dewasa, serta tergolong customer berkewarganegraan Portugal. Diketahui juga bahwa tipe costumer yang paling sering memberikan keuntungan pada hotel adalah tipe Transient.
+-- (2.) Revenue total hotel tersebut mengalami naik turun, meskipun relatif memiliki tren relatif meningkat setiap taunnya. 
+-- Berdasarkan record yang terjadi sebelumnya, diperkirakan revenue hotel tersebut akan menurun hingga awal tahun 2021, dan tetap memiliki tren 
+-- relatif meningkat hihngga pertangahan tahun 2021. 
+-- (3.) Strategi bisnis yang dapat dilakukan berasal dari beberapa perspektif: 
+-- Pendekatan Costumer, Strategi Marketing, kontrol Product sampingan, dan peningkatan fasilitas. Dari segi pendekatan customer, hotel dapat memberikan promosi lebih kepada 
+-- "Priority Customer", khususnya di Q2 - Q3 pertengahan tahun dimana jumlah customer tersebut diproyeksikan mencapai puncak. Dari segi marketing, 
+-- diketahui bahwa pendekatan melalui Online TA selalu menghasilkan jumlah customer dan revenue paling tinggi terhadap hotel. Peningkatan revenue juga 
+-- dapat dilakukan melalui kontrol paket makan yang disediakan hotel. Dapat berarti peningkatan kualitas makanan, kontrol harga, dsb. Meskipun memerlukan analisis lebih 
+-- lanjut mengenai korelasi dua variable tersebut, diketahui bahwa peningkatan revenue dari sevice makanan memiliki tren serupa dengan 
+-- revenue penyewaan ruangan. Peningkatan revenue melalui perspektif operasi, dapat dilakukan melalui pembukaan lahan parkir tambahan khususnya pada Q3 - Q4 
+-- akhir tahun yang memiliki peningkatan jumlah mobil secara ekstrem.
+
+-- Penjabaran mengenai karakteristik customer, laporan keuangan, serta strategi bisnis yang disebutkan diatas memerlukan identifikasi statistik lebih mendalam. 
+-- Di luar hal tersebut, insight yang diambil dari projek ini dapat memberikan gambaran awal mengenai business decision yang perlu diambil.
+
+
+
+
+
+
+
+
+
+
