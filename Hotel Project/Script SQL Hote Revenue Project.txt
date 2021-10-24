@@ -6,9 +6,8 @@
 -- Query menggunakan bahasa SQL dilakukan menggunakan software SQL Server 2019 dan Microsoft SQL Server Management Studio 18, dan kemudian divisualisasikan dengan Tableu Public.
 -- Nama table yang digunakan pada penulisan query pada file ini sama dengan judul data yang ditampilkan pada Tableu Public, untuk memudahkan pembacaan.
 
------------------ Customer Insight
-
--- Visitor Age Distribution vs Date
+---------------------------------------------------------------------- Part 1: Customer Insight
+---------------------------------------------------------------------- Visitor Age Distribution vs Date
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -24,7 +23,7 @@ from customer_record
 where is_canceled = 0
 group by arrival_date_month, arrival_date_year
 
--- Customer Distribution
+---------------------------------------------------------------------- Customer Distribution
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -42,7 +41,7 @@ on cr.market_segment = ms.market_segment
 where is_canceled = 0
 group by country
 
--- Booking vs Cancellation
+---------------------------------------------------------------------- Booking vs Cancellation
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -56,7 +55,7 @@ customer_type
 from customer_record
 group by reserved_room_type, customer_type
 
--- Marketing Channel vs Customer Amount
+---------------------------------------------------------------------- Marketing Channel vs Customer Amount
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -70,7 +69,7 @@ arrival_date_year
 from customer_record
 group by market_segment, arrival_date_year
 
--- Room Type vs Customer Type
+---------------------------------------------------------------------- Room Type vs Customer Type
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -84,7 +83,7 @@ customer_type
 from customer_record
 group by reserved_room_type, customer_type
 
--- Customer Type vs Customer Amount vs Date
+---------------------------------------------------------------------- Customer Type vs Customer Amount vs Date
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -100,7 +99,7 @@ concat(arrival_date_month,' ', arrival_date_year) as arrival
 from customer_record
 group by customer_type, arrival_date_month, arrival_date_year, hotel
 
--- Car Amount vs Customer Type vs Date
+---------------------------------------------------------------------- Car Amount vs Customer Type vs Date
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -116,7 +115,7 @@ from customer_record
 where required_car_parking_spaces = 1 and is_canceled = 0
 group by customer_type, arrival_date_month, arrival_date_year
 
--- Priority Customer vs Hotel vs Date
+---------------------------------------------------------------------- Priority Customer vs Hotel vs Date
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -132,7 +131,8 @@ from customer_record
 where (stays_in_week_nights+stays_in_weekend_nights) > (select avg(stays_in_week_nights+stays_in_weekend_nights) from customer_record) and is_canceled = 0
 group by customer_type, arrival_date_month, arrival_date_year, hotel
 
--- Meal Revenue vs Room Revenue vs Date
+---------------------------------------------------------------------- Part 2: Revenue and Operation
+---------------------------------------------------------------------- Meal Revenue vs Room Revenue vs Date
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -152,7 +152,7 @@ on cr.market_segment = ms.market_segment
 where is_canceled = 0
 order by reservation_status_date asc
 
--- Market Channel vs Revenue vs Date
+---------------------------------------------------------------------- Market Channel vs Revenue vs Date
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
@@ -171,7 +171,7 @@ on cr.market_segment = ms.market_segment
 		on cr.meal = mc.meal
 where is_canceled = 0
 
--- Revenue vs Time
+---------------------------------------------------------------------- Revenue vs Time
 with customer_record as (
 select * from dbo.customer_record_2018$
 union
