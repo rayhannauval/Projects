@@ -5,7 +5,6 @@
 -- (1.) Customer Behaviour
 -- (2.) Operation
 -- Query dilakukan menggunakan software SQL Server 2019 dan Microsoft SQL Server Management Studio 18.
--- Nama table pada file ini disamakan dengan judul grafik yang ditampilkan pada Tableu, untuk memudahkan pembacaan.
 
 ------------------------------------------------------------ Part 1: Customer Behaviour
 ------------------------------------------------------------ Jumlah Transaksi per Customer
