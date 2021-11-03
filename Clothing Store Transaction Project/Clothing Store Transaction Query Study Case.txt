@@ -1,0 +1,107 @@
+-- Project ini bertujuan untuk menjawab pertanyaan-pertanyaan yang disediakan oleh 8weeksqlchallenge.com untuk Case Study 7.
+-- Query dilakukan pada software PostgreSQL 13.
+
+----------------------------------------------------------------- Part 2: Study Case
+----------------------------------------------------------------- What was the total quantity sold for all products?
+
+select sum(s.qty) as quantity_sold, pd.product_name
+from balanced_tree.product_details as pd
+left join balanced_tree.sales as s
+on pd.product_id = s.prod_id
+group by pd.product_name
+order by pd.product_name asc
+
+
+----------------------------------------------------------------- What is the total generated revenue for all products before discounts?
+
+select sum(s.price * s.qty) as total_revenue, pd.product_name
+from balanced_tree.product_details as pd
+left join balanced_tree.sales as s
+on pd.product_id = s.prod_id
+group by pd.product_name
+order by pd.product_name asc
+
+
+----------------------------------------------------------------- What was the total discount given for all products?
+
+select sum(s.qty * s.price * s.discount/100) as total_revenue, pd.product_name
+from balanced_tree.product_details as pd
+left join balanced_tree.sales as s
+on pd.product_id = s.prod_id
+group by pd.product_name
+order by pd.product_name asc
+
+
+----------------------------------------------------------------- How many unique transactions were there?
+
+select count(distinct txn_id)
+from balanced_tree.sales
+
+
+----------------------------------------------------------------- What is the average unique products purchased in each transaction?
+
+select avg(count) as average_unique_product
+from 
+(select count(prod_id), txn_id 
+from balanced_tree.sales
+group by txn_id) as a
+
+
+----------------------------------------------------------------- What is the average revenue for member transactions and non-member transactions?
+
+select round(avg(s.price * s.qty), 2) as average_revenue, s.member
+from balanced_tree.sales as s
+group by s.member
+
+
+----------------------------------------------------------------- What is the average discount value per transaction?
+
+select round(avg(discount), 2) as average_discount, txn_id
+from balanced_tree.sales
+group by txn_id
+
+
+----------------------------------------------------------------- What is the percentage split of all transactions for members vs non-members?
+
+select member, round(count(txn_id) * 100.0 / (select count(txn_id) from balanced_tree.sales), 2) as percentage
+from balanced_tree.sales
+group by member;
+
+
+----------------------------------------------------------------- What are the top 3 products by total revenue before discount?
+
+select sum(s.price * s.qty) as total_revenue, pd.product_name 
+from balanced_tree.product_details as pd
+left join balanced_tree.sales as s
+on pd.product_id = s.prod_id
+group by pd.product_name
+order by total_revenue desc
+limit 3
+
+
+----------------------------------------------------------------- What is the total quantity, revenue, and discount for each segment?
+
+select sum(s.qty) as total_quantity, 
+sum(s.qty * s.price) as total_revenue, 
+sum(s.discount) as total_discount, 
+pd.segment_id
+from balanced_tree.product_details as pd
+left join balanced_tree.sales as s
+on pd.product_id = s.prod_id
+group by pd.segment_id
+order by pd.segment_id asc
+
+
+----------------------------------------------------------------- How many spesific transactions were there?
+-- Spesific Transactions are txn_id which only do transaction for 1 product_id only.
+-- It represent certain buyers that only need one spesific product.
+
+with unique_transaction as (
+select txn_id
+from balanced_tree.sales
+group by txn_id
+having count(txn_id) = 1
+order by txn_id asc)
+
+select count(txn_id)
+from unique_transaction
