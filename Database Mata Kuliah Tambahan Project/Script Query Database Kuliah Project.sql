@@ -88,4 +88,4 @@ on a.nim = b.nim
 	left join dbo.mata_kuliah$ as c
 	on a.kode_mk = c.kode_mk
 group by a.nim, a.hm, b.nama_belakang, b.nama_depan
-HAVING COUNT(a.hm) > 1 and a.hm = 'C'
+having count(a.hm) > 1 and a.hm = 'C'
