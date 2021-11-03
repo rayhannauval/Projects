@@ -73,7 +73,7 @@ from dbo.purchase_percentage$ as a
 left join dbo.purchase_time$ as b
 on a.transaction_id = b.transaction_id
 group by b.customer
-order by customer asc
+order by b.customer asc
 
 ------------------------------------------------------------ Identifikasi Customer Prioritas
 -- Manajemen Ulabox perlu memetakan customer mana saja yang termasuk kelompok prioritas. 
