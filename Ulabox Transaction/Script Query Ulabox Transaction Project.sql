@@ -17,7 +17,7 @@ group by customer
 order by customer asc
 
 ------------------------------------------------------------ Klasifikasi Customer
--- Pihak manajerial Ulabox mengklasifikasikan customer menjadi kelompok Platinu, Gold, Silver, dan Economy. Kelompok tersebut dapat menjadi acuan 
+-- Pihak manajerial Ulabox mengklasifikasikan customer menjadi kelompok Premium, Gold, Silver, dan Economy. Kelompok tersebut dapat menjadi acuan 
 -- strategis untun pengembangan bisnis, seperti dalam hal pembagian discount dan purna jual.
 
 with customer_table as(
