@@ -1,4 +1,4 @@
--- Data source adalah rekap transaksi sebuah platform retial onlinem Ulabox. Data terdiri dari 14 column dan 30.000 row. 
+-- Data source adalah rekap transaksi sebuah platform retail online Ulabox. Data terdiri dari 14 column dan 30.000 row. 
 -- Data yang diupload pada github telah dinormalisasi untuk mengurangi redudansi. Hasil normalisasi data adalah tiga table
 -- dengan judul discount, purchase_percentage, dan purchase_time.
 -- Beberapa insight yang bisa didapat melalui project ini: 
