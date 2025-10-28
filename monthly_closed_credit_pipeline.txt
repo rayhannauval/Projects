@@ -1,0 +1,384 @@
+
+# ================================================
+# Monthly Closed-Credit Pipeline Runner (Looping)
+# - Iterates month-by-month from start_end_month back 13 months (inclusive)
+# - For each month:
+#     * sets @start_date (month start minus 4 months) and @end_date (month end)
+#     * executes the queries/merges seen in your screenshots
+#     * writes the final dataframe to GCS as Parquet: .../base_<yymm>.parquet
+# -----------------------------------------------
+# Requirements:
+#   pip install google-cloud-bigquery pandas numpy pyarrow gcsfs
+#   gcloud auth application-default login      (or service account)
+# -----------------------------------------------
+# Notes:
+# - Location is fixed to "asia-southeast2" (same as in your code).
+# - The window for monthly features uses the last 5 months (m0..m4) aligned
+#   to `end_date`. If you need a different horizon, adjust anchor logic.
+# ================================================
+
+import pandas as pd
+import numpy as np
+import datetime as dt
+from dateutil.relativedelta import relativedelta
+from google.cloud import bigquery
+
+# -------- CONFIG --------
+GCS_OUT_DIR = "gs://bkt-data-platform-prod-processing-datascience-sharedir/Closed Credit Card/base"
+BQ_LOCATION = "asia-southeast2"
+
+# Set the first batch month-end (YYYY-MM-DD). You said this is September 2025.
+start_end_month = dt.date(2025, 9, 30)   # month-end for the first run
+n_months = 13  # inclusive count: 2025-09 down to 2024-09
+
+# BigQuery client
+client = bigquery.Client(location=BQ_LOCATION)
+
+def month_start(d: dt.date) -> dt.date:
+    return d.replace(day=1)
+
+def month_end(d: dt.date) -> dt.date:
+    # Ensure it's the last day of the month for any given date d
+    first_next = (d.replace(day=1) + relativedelta(months=1))
+    return first_next - dt.timedelta(days=1)
+
+# ---------------- Core pipeline for a single end_date ----------------
+def run_one_month(end_date: dt.date) -> pd.DataFrame:
+    """Run the full pipeline for a given month (using your query logic)."""
+    # Anchor dates
+    end_date = month_end(end_date)
+    start_date = month_start(end_date - relativedelta(months=4))  # cover m0..m4
+
+    # For readable tags like '202509' and '2509'
+    dt_str = end_date.strftime('%Y%m')
+    dt_short = end_date.strftime('%y%m')
+
+    # --------- 1) CLOSE_1 (tag for closures) ---------
+    # Uses your early snippet that created `close_1` and set close_1['tag']=1
+    close_sql = f"""
+    SELECT DISTINCT cifno AS cif, 1 AS tag
+    FROM `sas.kartuall_encrypt` a
+    INNER JOIN (
+        SELECT DISTINCT aead.deterministic_decrypt(cardca) AS cardca
+        FROM `sas.kartuall_encrypt`
+        WHERE dt BETWEEN DATE_SUB(DATE({end_date!s}), INTERVAL 1 MONTH) AND DATE({end_date!s})
+          AND LOWER(TRIM(tpcia)) = 'p' AND microexist = 'livecard'
+    ) b
+    ON aead.deterministic_decrypt(a.cardca) = b.cardca
+    WHERE dt BETWEEN DATE_TRUNC(DATE_SUB(DATE({end_date!s}), INTERVAL 1 MONTH), MONTH) AND DATE({end_date!s})
+      AND microexist = 'closecard'
+      AND LOWER(stat) IN ('clo by ch','clo vol by ch','clo by ch lunas','clo co lunas')
+      AND LOWER(TRIM(tpcia)) = 'p'
+    """
+
+    close_1 = client.query(close_sql, location=BQ_LOCATION).to_dataframe()
+
+    # --------- 2) HAVECARD by month (m0..m4) ---------
+    havecard_sql = """
+    WITH base AS (
+        SELECT
+            DISTINCT a.cifno AS cif,
+            DATE_TRUNC(a.dt, MONTH) AS ym,
+            MAX(CAST(a.havecard AS INT64)) AS havecard
+        FROM `sas.kartuall_encrypt` a
+        INNER JOIN (
+            SELECT DISTINCT aead.deterministic_decrypt(cardca) AS cardca
+            FROM `sas.livecard_encrypt`
+            WHERE dt BETWEEN @start_date AND @end_date AND LOWER(TRIM(tpcia)) = 'p'
+        ) b
+        ON aead.deterministic_decrypt(a.cardca) = b.cardca
+        WHERE a.dt BETWEEN @start_date AND @end_date
+          AND LOWER(TRIM(tpcia)) = 'p'
+        GROUP BY cif, ym
+    )
+    SELECT
+        b.cif,
+        MAX(IF(b.ym = DATE_TRUNC(@end_date, MONTH), b.havecard, NULL)) AS havecard_m0,
+        MAX(IF(b.ym = DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 1 MONTH), MONTH), b.havecard, NULL)) AS havecard_m1,
+        MAX(IF(b.ym = DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 2 MONTH), MONTH), b.havecard, NULL)) AS havecard_m2,
+        MAX(IF(b.ym = DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 3 MONTH), MONTH), b.havecard, NULL)) AS havecard_m3,
+        MAX(IF(b.ym = DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 4 MONTH), MONTH), b.havecard, NULL)) AS havecard_m4
+    FROM base b
+    GROUP BY b.cif
+    ORDER BY b.cif
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", start_date.isoformat()),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date.isoformat()),
+        ]
+    )
+    havecard_6m = client.query(havecard_sql, job_config=job_config, location=BQ_LOCATION).to_dataframe()
+    havecard_6m = havecard_6m.fillna(0)
+    havecard_6m['havecard_avg_13m'] = havecard_6m[[
+        'havecard_m0','havecard_m1','havecard_m2','havecard_m3','havecard_m4'
+    ]].mean(axis=1)
+
+    # --------- 3) FREQ ALL (m0..m4) ---------
+    freq_sql = """
+    WITH anchors AS (
+      SELECT
+        DATE_TRUNC(@end_date, MONTH) AS m0,
+        DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 1 MONTH), MONTH) AS m1,
+        DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 2 MONTH), MONTH) AS m2,
+        DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 3 MONTH), MONTH) AS m3,
+        DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 4 MONTH), MONTH) AS m4
+    ),
+    kartu_by_month AS (
+      SELECT DISTINCT
+        a.cifno AS cif,
+        DATE_TRUNC(a.dt, MONTH) AS ym,
+        aead.deterministic_decrypt(a.cardca) AS cardca
+      FROM `data-platform-prod-processing.sas.kartuall_encrypt` a
+      WHERE a.dt BETWEEN @start_date AND @end_date
+        AND TRIM(LOWER(a.tpcia)) = 'p'
+    ),
+    vol_all AS (
+      SELECT
+        DATE_TRUNC(v.dt, MONTH) AS ym,
+        aead.deterministic_decrypt(v.card) AS cardca
+      FROM `data-platform-prod-processing.sas.svolume_encrypt` v
+      WHERE v.dt BETWEEN @start_date AND @end_date
+    ),
+    freq AS (
+      SELECT
+        k.cif,
+        k.ym,
+        COUNT(*) AS freq_all
+      FROM kartu_by_month k
+      JOIN vol_all v
+        ON k.ym = v.ym AND k.cardca = v.cardca
+      GROUP BY k.cif, k.ym
+    )
+    SELECT
+      f.cif,
+      SUM(IF(f.ym = a.m0, f.freq_all, 0)) AS freq_m0,
+      SUM(IF(f.ym = a.m1, f.freq_all, 0)) AS freq_m1,
+      SUM(IF(f.ym = a.m2, f.freq_all, 0)) AS freq_m2,
+      SUM(IF(f.ym = a.m3, f.freq_all, 0)) AS freq_m3,
+      SUM(IF(f.ym = a.m4, f.freq_all, 0)) AS freq_m4
+    FROM freq f
+    CROSS JOIN anchors a
+    GROUP BY f.cif
+    ORDER BY f.cif
+    """
+    freq_all_4m = client.query(freq_sql, job_config=job_config, location=BQ_LOCATION).to_dataframe()
+
+    # --------- 4) AMOUNT ALL (m0..m4) ---------
+    amt_sql = """
+    WITH anchors AS (
+      SELECT
+        DATE_TRUNC(@end_date, MONTH) AS m0,
+        DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 1 MONTH), MONTH) AS m1,
+        DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 2 MONTH), MONTH) AS m2,
+        DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 3 MONTH), MONTH) AS m3,
+        DATE_TRUNC(DATE_SUB(@end_date, INTERVAL 4 MONTH), MONTH) AS m4
+    ),
+    kartu_by_month AS (
+      SELECT DISTINCT
+        a.cifno AS cif,
+        DATE_TRUNC(a.dt, MONTH) AS ym,
+        aead.deterministic_decrypt(a.cardca) AS cardca
+      FROM `data-platform-prod-processing.sas.kartuall_encrypt` a
+      WHERE a.dt BETWEEN @start_date AND @end_date
+        AND TRIM(LOWER(a.tpcia)) = 'p'
+    ),
+    vol_all AS (
+      SELECT
+        DATE_TRUNC(v.dt, MONTH) AS ym,
+        aead.deterministic_decrypt(v.card) AS cardca,
+        SUM(SAFE_CAST(v.amttrx AS NUMERIC)) AS amt_all
+      FROM `data-platform-prod-processing.sas.svolume_encrypt` v
+      WHERE v.dt BETWEEN @start_date AND @end_date
+      GROUP BY ym, cardca
+    ),
+    joined AS (
+      SELECT
+        k.cif,
+        k.ym,
+        SUM(v.amt_all) AS amt_all_month
+      FROM kartu_by_month k
+      JOIN vol_all v
+        ON k.ym = v.ym AND k.cardca = v.cardca
+      GROUP BY k.cif, k.ym
+    )
+    SELECT
+      j.cif,
+      SUM(IF(j.ym = a.m0, j.amt_all_month, 0)) AS amt_m0,
+      SUM(IF(j.ym = a.m1, j.amt_all_month, 0)) AS amt_m1,
+      SUM(IF(j.ym = a.m2, j.amt_all_month, 0)) AS amt_m2,
+      SUM(IF(j.ym = a.m3, j.amt_all_month, 0)) AS amt_m3,
+      SUM(IF(j.ym = a.m4, j.amt_all_month, 0)) AS amt_m4
+    FROM joined j
+    CROSS JOIN anchors a
+    GROUP BY j.cif
+    ORDER BY j.cif
+    """
+    amt_all_4m = client.query(amt_sql, job_config=job_config, location=BQ_LOCATION).to_dataframe()
+    amt_cols = [c for c in amt_all_4m.columns if c.startswith('amt_')]
+    amt_all_4m[amt_cols] = amt_all_4m[amt_cols].fillna(0)
+    amt_all_4m['amt_avg_4m'] = amt_all_4m[['amt_m0','amt_m1','amt_m2','amt_m3','amt_m4']].mean(axis=1)
+
+    # slope/trend on amounts across m0..m4
+    cols_amt = ['amt_m0','amt_m1','amt_m2','amt_m3','amt_m4']
+    def get_slope(row):
+        y = row[cols_amt].to_numpy(dtype=float)
+        x = np.arange(len(y))
+        mask = ~np.isnan(y)
+        x = x[mask]; y = y[mask]
+        if len(y) < 2:
+            return np.nan
+        slope, _ = np.polyfit(x, y, 1)
+        return slope
+    amt_all_4m['amttrx_trend_4m'] = amt_all_4m.apply(get_slope, axis=1)
+
+    # --------- 5) Merge base + tags ---------
+    base = havecard_6m.merge(close_1, on='cif', how='left').fillna(0)
+    base['tag'] = base['tag'].astype('int64')
+    base = base.merge(freq_all_4m, on='cif', how='left').fillna(0)
+    base_v3 = base.merge(amt_all_4m, on='cif', how='left').fillna(0)
+
+    # --------- 6) LAST PAYMENT + recoding ---------
+    last_payment_sql = """
+    SELECT cifno AS cif, lastpayment, lastretail, rate, stmlmtsg AS cc_limit
+    FROM `sas.kartuall_encrypt` a
+    WHERE dt BETWEEN @start_date AND @end_date
+      AND LOWER(TRIM(tpcia)) = 'p'
+    """
+    last_payment = client.query(last_payment_sql, job_config=job_config, location=BQ_LOCATION).to_dataframe()
+
+    def assign_rate(rate):
+        if rate == 'High:UR>80%': return '08. High:UR>80%'
+        elif rate == 'Moderate:UR 25-80%': return '06. Moderate:UR 25-80%'
+        elif rate == 'Medium:UR 10-25%': return '04. Medium:UR 10-25%'
+        elif rate == 'Low:UR<10%': return '02. Low:UR<10%'
+        elif rate == 'Never Use': return '01. Never Use'
+        else: return 'unknown'
+
+    def assign_lastretail(x):
+        mapping = {
+            '1bln lalu':'08. 1bln lalu','2bln lalu':'07. 2bln lalu','3bln lalu':'06. 3bln lalu',
+            'never use retail':'01. never use retail'
+        }
+        return mapping.get(str(x).strip().lower(), 'unknown')
+
+    def assign_lastpayment(x):
+        mapping = {
+            '1bln lalu':'08. 1bln lalu','2bln lalu':'07. 2bln lalu','3bln lalu':'06. 3bln lalu',
+        }
+        return mapping.get(str(x).strip().lower(), 'unknown')
+
+    # Apply recodes if columns present
+    if 'rate' in last_payment.columns:
+        last_payment['rate'] = last_payment['rate'].apply(assign_rate)
+    if 'lastretail' in last_payment.columns:
+        last_payment['lastretail'] = last_payment['lastretail'].apply(assign_lastretail)
+    if 'lastpayment' in last_payment.columns:
+        last_payment['lastpayment'] = last_payment['lastpayment'].apply(assign_lastpayment)
+
+    last_payment = last_payment.groupby('cif')[['lastpayment','lastretail','rate','cc_limit']].max().reset_index()
+
+    base_v4 = base_v3.merge(last_payment, on='cif', how='left')
+    for col in ['lastpayment','lastretail','rate']:
+        if col in base_v4.columns:
+            base_v4[col] = base_v4[col].fillna(f'01. Never Use')
+    if 'cc_limit' in base_v4.columns:
+        base_v4['cc_limit'] = base_v4['cc_limit'].fillna(base_v4['cc_limit'].mean())
+
+    # --------- 7) Account age (months since approve) ---------
+    acc_sql = """
+    SELECT cifno AS cif, aprvdcta AS approve_date
+    FROM `sas.kartuall_encrypt`
+    WHERE dt BETWEEN @start_date AND @end_date
+      AND LOWER(TRIM(tpcia)) = 'p'
+    """
+    acc_age = client.query(acc_sql, job_config=job_config, location=BQ_LOCATION).to_dataframe()
+    if not acc_age.empty and 'approve_date' in acc_age.columns:
+        acc_age['approve_date'] = pd.to_datetime(acc_age['approve_date'], errors='coerce')
+        end_dt = pd.to_datetime(end_date)
+        acc_age['months_diff_app'] = (end_dt.year - acc_age['approve_date'].dt.year) * 12 + (end_dt.month - acc_age['approve_date'].dt.month)
+        acc_age = acc_age.sort_values(by='months_diff_app', ascending=False)
+        acc_age = acc_age.drop_duplicates(subset='cif', keep='first')
+        base_v5 = base_v4.merge(acc_age[['cif','months_diff_app']], on='cif', how='left')
+        base_v5['months_diff_app'] = base_v5['months_diff_app'].fillna(base_v5['months_diff_app'].mean())
+    else:
+        base_v5 = base_v4.copy()
+
+    # --------- 8) Pull `mx_dm` wide table (subset of your columns) ---------
+    # Keep as-is: you can add/remove fields as needed.
+    mx_sql = f"""
+    SELECT * EXCEPT(dt_str_om)
+    FROM `dm_sandbox_non_pii.mx_datamart_{dt_str}`
+    """
+    try:
+        mx_dm = client.query(mx_sql, location=BQ_LOCATION).to_dataframe()
+        if 'cif' not in mx_dm.columns and 'cust_no' in mx_dm.columns:
+            mx_dm = mx_dm.rename(columns={'cust_no':'cif'})
+        if 'cif' in mx_dm.columns:
+            mx_dm['cif'] = mx_dm['cif'].astype('int64', errors='ignore')
+        base_v6 = base_v5.merge(mx_dm, on='cif', how='left').fillna(0)
+    except Exception as e:
+        # If the snapshot doesn't exist, continue without it
+        base_v6 = base_v5.copy()
+
+    # --------- 9) Derived features (averages, counts, trends) ---------
+    base_v7 = base_v6.copy()
+    # averages based on freq and amt windows
+    if set(['freq_m0','freq_m1','freq_m2']).issubset(base_v7.columns):
+        base_v7['avg_freq_3months'] = base_v7[['freq_m0','freq_m1','freq_m2']].mean(axis=1)
+    if set(['freq_m0','freq_m1','freq_m2','freq_m3']).issubset(base_v7.columns):
+        base_v7['avg_freq_4_months'] = base_v7[['freq_m0','freq_m1','freq_m2','freq_m3']].mean(axis=1)
+    if set(['amt_m0','amt_m1','amt_m2']).issubset(base_v7.columns):
+        base_v7['avg_amt_3months'] = base_v7[['amt_m0','amt_m1','amt_m2']].mean(axis=1)
+    if set(['amt_m0','amt_m1','amt_m2','amt_m3']).issubset(base_v7.columns):
+        base_v7['avg_amt_4months'] = base_v7[['amt_m0','amt_m1','amt_m2','amt_m3']].mean(axis=1)
+
+    # zero-transaction counters
+    freq_cols = [c for c in base_v7.columns if c.startswith('freq_m')]
+    amt_cols2 = [c for c in base_v7.columns if c.startswith('amt_m')]
+    if freq_cols:
+        base_v7['no_txn_3month'] = (base_v7[[c for c in freq_cols[:3]]]==0).astype(int).sum(axis=1)
+        base_v7['no_txn_4_3month'] = (base_v7[[c for c in freq_cols[2:5]]]==0).astype(int).sum(axis=1)
+    if 'havecard_m0' in base_v7.columns:
+        hc_cols = [c for c in base_v7.columns if c.startswith('havecard_m')]
+        base_v7['havecard_trend_6_months'] = base_v7[hc_cols].apply(lambda r: trend(r.values), axis=1) if hc_cols else 0
+
+    # total products held (sum columns that contain 'hold_')
+    hold_cols = [c for c in base_v7.columns if 'hold_' in c]
+    if hold_cols:
+        base_v7['total_prod_hold'] = base_v7[hold_cols].fillna(0).astype(int).sum(axis=1)
+
+    # Local trend helper (same as your custom function)
+    def trend(x):
+        dd = np.array(x, dtype=float)
+        if len(dd) != 1:
+            denum = (len(dd)-1)*len(dd)/2
+            ddcopy = dd[:]
+            add1 = 0; sub1 = 0
+            for p in range(0, len(ddcopy)-1):
+                element = dd[p]
+                d = dd[p+1:]
+                subtr = (len(d)-sum(d <= element))
+                addr = len(d) - subtr
+                sub1 += subtr
+                add1 += addr
+            return np.round(((sub1 + add1)/denum), decimals=2)
+        else:
+            return 0
+
+    # Example of trend usage for spend/freq/havecard sequences (if present)
+    base_v7['spend_trend_6_months'] = base_v7[[c for c in base_v7.columns if 'amt_m' in c]].apply(trend, axis=1) if any(k.startswith('amt_m') for k in base_v7.columns) else 0
+    base_v7['freq_trend_6_months'] = base_v7[[c for c in base_v7.columns if 'freq_m' in c]].apply(trend, axis=1) if any(k.startswith('freq_m') for k in base_v7.columns) else 0
+
+    # --------- 10) Save to Parquet in GCS ---------
+    out_path = f"{GCS_OUT_DIR}/base_{dt_short}.parquet"
+    base_v7.to_parquet(out_path, index=False)
+    print(f"Saved: {out_path} -> rows={len(base_v7):,}")
+    return base_v7
+
+# ---------------- Runner loop ----------------
+for i in range(n_months):
+    run_month = start_end_month - relativedelta(months=i)
+    _ = run_one_month(run_month)
+print("All done.")
